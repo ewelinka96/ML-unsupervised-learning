@@ -1,0 +1,412 @@
+---
+title: "Association rules - market basket analysis"
+author: "Ewelina Osowska"
+date: ""
+output:
+  html_document:
+    toc: true
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 120)
+```
+  
+### Basket analysis
+
+Analysis of sales data is one of the most common implementation of association rules. The simpliest definition of association rule is "if something happens then the other thing also tends to happen". In case of sales data, it can be transformed to the statement "if customer buys X, he also tends to buy Y", where X and Y are some itemsets. Mining such rules is very important in sales branch. Companies may take advantage of these by arranging the store or catalogs in a specific way considering which products are more likely to be purchased together, setting sales promotions in order to stimulate the sale of specific product or by making personalizes discounts. [https://www.cs.helsinki.fi/u/htoivone/pubs/advances.pdf]
+
+### Dataset
+
+During the analysis, I will use Groceries dataset provided by arules package. It was published as a text file on GitHub^ (przypis). It can be imported with read.table() function and then transformed into object of class transactions with read.transactions().
+
+```{r echo = TRUE, message=FALSE}
+library(stringr)
+Groceries <- read.table("https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/groceries.csv", sep=";")
+head(Groceries)
+```
+
+```{r echo = TRUE, message=FALSE}
+transactions <- str_split_fixed(Groceries$V1, ",", n = Inf)
+head(transactions[,1:4])#limited to 4 columns since from the fifth column there are no items
+```
+
+```{r echo = TRUE, message=FALSE}
+write.csv(transactions, file = "transactions.csv", row.names = F)
+```
+
+```{r echo = TRUE, message=FALSE}
+library(arules)
+Groceries <- read.transactions("transactions.csv", format = "basket", sep = ",", skip=1)
+```
+
+However, it is also available as an object of class transactions and can be analyzed straightaway. It can be imported through data() function.
+
+```{r echo = TRUE, message=FALSE}
+data(Groceries)
+```
+
+### Initial analysis 
+
+The first step of the analysis will be inspecting the detailed information of the data. 
+
+```{r echo = TRUE, message=FALSE}
+cat("Number of baskets:", length(Groceries))
+```
+
+```{r echo = TRUE, message=FALSE}
+cat("Number of unique items:", sum(size(Groceries)))
+```
+
+The following output shows first 5 products in the dataset. Moreover, beyond the label of the product, one can see also two associated levels to a particular product, where level1 is the most broad one. Groups of products will be a subject of hierarchical rule mining section.
+
+```{r echo = TRUE, message=FALSE}
+head(itemInfo(Groceries))
+```
+
+Knowing the products, one can also check which items are most frequent in transactions. The below plot shows 10 most occuring products in the Groceries data.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(arulesViz)
+itemFrequencyPlot(Groceries, topN=10, type="relative", main="Items Frequency", cex.names=0.8) 
+```
+
+Since we know what are the most frequent items, let's examine which are the least frequent ones. The below function will list 10 items which has the lowest frequency ratio and thus are the least interesting for the customers. It may be caused by the character of the store or by its prices. However, these products should be considered by the store managers.
+
+```{r echo = TRUE, message=FALSE}
+head(sort(itemFrequency(Groceries), decreasing=FALSE), n=10)
+```
+
+Interesting for the analysis is also count of products in basket. The plot below shows the distribution of the number of items per basket.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+hist(size(Groceries), breaks = 0:40, xaxt="n", ylim=c(0,2500), 
+     main = "Number of items in particular baskets", xlab = "Items")
+axis(1, at=seq(0,40,by=5), cex.axis=0.8)
+```
+
+```{r echo = TRUE, message=FALSE}
+cat("The biggest basket consists of", ncol(transactions), "products.")
+```
+
+One can see that the most frequent itemsets are those consisting of one product. The number of baskets decreases with the number of items. 
+
+### The Eclat Algorithm
+
+The Eclat algorithm is used to identify frequent patterns in a transaction data. The Eclat algorithm takes an input value of minimum support and rejects those with the lower support. The support measure tells how many times the itemset appears in all transactions. Thus, the results are the most frequent itemsets. ^ 
+https://en.wikibooks.org/wiki/Data_Mining_Algorithms_In_R/Frequent_Pattern_Mining/The_Eclat_Algorithm 
+
+```{r echo = TRUE, message=FALSE, include=FALSE}
+itemsets <- eclat(Groceries, parameter=list(supp=0.01, minlen = 2, maxlen=20)) 
+```
+
+```{r echo = TRUE, message=FALSE}
+inspect(head(itemsets))
+```
+
+As can be seen above, the result of the Eclat algorithm are three most frequent itemsets. The result is determined by the parameters set in the eclat() function. That is the minumum support equal to 0.01, the minumum length of the itemset eual to 2 and the maximum length of the itemset equal to 20. Considering that the value of support can be from 0 to 1 and also assuming that the higher the measure the better, one can deduce that the above output indicates a moderate shop pattern of buying items together, i.e. whole milk and yogurt, rolls/buns and whole milk, other vegetables and whole milk.
+
+Next step of the analysis will be induction of the rules from determined itemsets. It can be done with the function ruleInduction(). The default method implemented by the function is prefix tree. The function needs at least three arguments: the output object of the Eclat algorithm, the fundamental dataset and the specification of confidence parameter. Confidence can be understood as the measure of the strenght of the rule. Let's assume two levels of the confidence - 1 and 0.5 - and check how many rules were determined.
+
+```{r echo = TRUE, message=FALSE}
+rules <- ruleInduction(itemsets, Groceries, confidence=1)
+rules
+```
+
+```{r echo = TRUE, message=FALSE}
+rules <- ruleInduction(itemsets, Groceries, confidence=0.5)
+rules
+```
+
+Only assuming confidence at the 0.5 level, one can inspect the rules. This means that the strenght of the determined rules is between 100% and 50%. Let's now look at the mined rules.
+
+```{r echo = TRUE, message=FALSE}
+inspect(rules)
+```
+
+The output consists of six columns. First two - lhs and rhs - refer to the itemset in antecedent (if I buy x...) and itemsets in consequent (...then I buy y) respectively. One can see also earlier mentioned measures: support and confidence. Moreover, there also can be seen measure called lift. Lift indicates how more or less likely it is that there will occure a shopping pattern compared to the situation in which items are independent.
+
+The strongest rule seems to be the one indicating that if a customer buys curd and yoghurt, he also buys whole milk. In case of this particular rule, around 1% of all transactions in a dataset contain curd, yoghurt and whole milk together. According to the value of confidence, the probability of appearing whole milk in a transaction which contains yoghurt is 0.58. Moreover, occuring of these items together is 2.28 times the rate we would expect assuming independence of both products.
+
+### The Apriori algorithm
+
+The second implemented algorithm will be Apriori. Given a set of itemsets, the algorithm attempts to find subsets which are common to at least a minimum number C of the itemsets. It works iteratively using a "bottom up" approach. It means that the starting point of the algorithm is a single item and if there exists an association between this and other item (under specific condition of support value), then new itemset is created. The algorithm terminates if no extensions of the current itemsets are found. ^
+https://en.wikibooks.org/wiki/Data_Mining_Algorithms_In_R/Frequent_Pattern_Mining/The_Apriori_Algorithm
+
+```{r echo = TRUE, message=FALSE, include=FALSE}
+rules1<-apriori(Groceries, parameter=list(supp=0.01, conf=0.5)) 
+```
+
+```{r echo = TRUE, message=FALSE}
+inspect(rules1)
+```
+
+In order to extract the strongest rules, I will use is.significant() function which is based on Fisher's exact test.
+
+```{r echo = TRUE, message=FALSE}
+is.significant(rules1, Groceries)
+```
+
+Despite the fact that both algorithms works differently, the output obtained by inspecting rules by Apriori algorithm is exactly the same as the output obtained by applying Eclat algorithm. 
+
+Since the rules obtained using both algorithms are the same, I will use rules object (obtained with the Eclat) in firther analysis.
+
+Above results can be also presented graphically. Below, one can see 15 obtained rules. The more red the rectangle, the stronger the association rule. The strenght of the rule is measured with lift. The arrangement of the rectangles depends of the values of support and confidence. 
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE, fig.height = 4, fig.width = 6}
+arulesViz::plotly_arules(rules, method="matrix", measure=c("support","confidence"))
+```
+
+Next plot is analogical to the previous one but presented in a slightly different way. However, it carries the same information.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+plot(rules, method="grouped")
+```
+
+One can also visualize rules in a form of graph. The arrows shows the direction of the basket rule, eg. if a person buys citrus fruit, it is possible he will also buy other vegetables. The size of circles idicates the support rate and the color indicates the lift. It is easily seen which items are the most frequent combined, for example other vegetables, whole milk or yogurt.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+plot(rules, method="graph", shading="lift") 
+```
+
+### Individual rule representation
+
+After analysing all rules together, I will now focus on particular items. As said before, the most frequent items in transactions are among others whole milk, other vegatables, rolls/buns, soda and joghurt. Thus, I will run Apriori algorithm on these and check whether there are any interesting patterns not spotted yet. Here, I set minimum support equal to 1%. The value of confidence take three levels. Some rules will be generated with the minimum confidence 0.5 and some will be generated with the minimum confidence 0.3 or 0.2. That is because in some cases no rules are generated assuming first level.
+
+**Whole milk**
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.milk <- apriori(data=Groceries,  parameter=list(supp=0.01, conf = 0.5, target="rules"), appearance = list(default="lhs", rhs="whole milk"), control=list(verbose=F)) 
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.milk.byconf <- sort(rules.milk, by="confidence", decreasing=TRUE)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+inspect(rules.milk.byconf)
+```
+
+It occurs that for minimum support 1% there are 11 rules mined by the Apriori algorithm consequent in buying whole milk. According to confidence, the strongest one is {curd, yogurt} => {whole milk}. As to support, the strongest one is {other vegetables, yogurt} => {whole milk}. The highest lift refers to {curd, yogurt} => {whole milk} rule.
+
+**Other vegetables** 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.vege <- apriori(data=Groceries,  parameter=list(supp=0.01, conf = 0.5, target="rules"), appearance = list(default="lhs", rhs="other vegetables"), control=list(verbose=F)) 
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.vege.byconf <- sort(rules.vege, by="confidence", decreasing=TRUE)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+inspect(rules.vege.byconf)
+```
+
+For minimum support 1%, the algorithm mined 4 rules. According to confidence, the strongest one is {citrus fruit, root vegetables} => {other vegetables}. As to support, the strongest one is {root vegetables, yogurt} => {other vegetables}. The highest lift refers to {citrus fruit,root vegetables} => {other vegetables} rule.
+
+**Rolls/buns** 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.roll <- apriori(data=Groceries,  parameter=list(supp=0.01, conf = 0.3, target="rules"), appearance = list(default="lhs", rhs="rolls/buns"), control=list(verbose=F)) 
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.roll.byconf <- sort(rules.roll, by="confidence", decreasing=TRUE)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+inspect(head(rules.roll.byconf))
+```
+
+Assuming confidence 0.5, the algorithm found no rules. Thus, I decreased the minimum value to 0.3. After that, two rules were mined concerning rolls/buns assuming 1% support. Both rules are comparably strong.They say that if a person buys frankfurter or sausage, he will also buy rolls/buns. The confidence of both rules is 0.33 and the lift is 1.77. 
+
+**Soda** 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.soda <- apriori(data=Groceries,  parameter=list(supp=0.01, conf = 0.2, target="rules"), appearance = list(default="lhs", rhs="soda"), control=list(verbose=F)) 
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.soda.byconf <- sort(rules.soda, by="confidence", decreasing=TRUE)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+inspect(rules.soda.byconf)
+```
+
+Assuming confidence 0.5, the algorithm also found no rules. Thus, I decreased the minimum confidence to 0.2 and got eleven rules. The strongest ones seem to be {chocolate} => {soda} with the confidence 0.27. The lift is  1.56. However, the most frequent rule on the list is {rolls/buns}	=> {soda}.
+
+**Yogurt** 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.yogurt <- apriori(data=Groceries,  parameter=list(supp=0.01, conf = 0.3, target="rules"), appearance = list(default="lhs", rhs="yogurt"), control=list(verbose=F)) 
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+rules.yogurt.byconf <- sort(rules.yogurt, by="confidence", decreasing=TRUE)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+inspect(head(rules.yogurt.byconf))
+```
+
+The last analysed item was yogurt. Just as in the previous cases, I had to lower the confidence level to 0.3 since there were no asssociation rules at all on 0.5 level. From the above rules, it is clear that concerning confidence, the strongest rule is {whole milk,curd}	=>	{yogurt}. It has also the highest lift - 2.76.
+
+Moving to graphical analysis, below one can see graphs of above mined rules.
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.milk, method="graph", cex=0.7, shading="lift")
+```
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.vege, method="graph", cex=0.7, shading="lift")
+```
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.roll, method="graph", cex=0.7, shading="lift")
+```
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.soda, method="graph", cex=0.7, shading="lift")
+```
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.yogurt, method="graph", cex=0.7, shading="lift")
+```
+
+Starting from the fisrt graph which concerns whole milk, 
+
+The below plots show parallel coordinates. Worth mentioned is the meaning of the x axis. Positions 3, 2 and 1 are associated with the lhs, so the itemset which the customer already has in the basket, where 3 and 2 are the most recent one and 1 is the item added previously.
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.milk, method="paracoord")
+plot(rules.vege, method="paracoord")
+plot(rules.roll, method="paracoord")
+plot(rules.soda, method="paracoord")
+plot(rules.yogurt, method="paracoord")
+```
+
+### Hierarchical rules
+
+Since Groceries dataset beyond names of items contains also two item levels, it is possible to conduct hierarchical rule mining. It is based on aggregating items together and checking if any group of products is associated with another. Moreover, one can also provide an analysis on relationships between individual items and groups of items. I will start from mining rules assuming antecedent and consequent to be groups of products.
+
+The unique categories of level1 are as follows:
+
+```{r echo = TRUE, message=FALSE}
+unique(Groceries@itemInfo[["level1"]])
+```
+
+The unique categories of level2 are as follows:
+
+```{r echo = TRUE, message=FALSE}
+unique(Groceries@itemInfo[["level2"]])
+```
+
+Since there are more levels concerning level2, I will use them in order to enrich the analysis.
+
+```{r echo = TRUE, message=FALSE}
+trans_level2 <- aggregate(Groceries, by="level2")
+inspect(head(trans_level2))
+```
+
+```{r echo = TRUE, message=FALSE, include=FALSE}
+rules.trans_level2 <- apriori(trans_level2, parameter=list(supp=0.05, conf=0.5)) 
+rules.by.conf2 <- sort(rules.trans_level2, by="confidence", decreasing=TRUE) 
+```
+
+```{r echo = TRUE, message=FALSE}
+inspect(rules.by.conf2)
+```
+
+Assuming 5% support and 0.5 confidence, Apriori algorithm mined 20 association rules. The strongest one concerning confidence is {fruit, vegetables} => {dairy produce} with support equal to 0.08. The highest lift is on the other hand observed for {dairy produce, fruit}	=> {vegetables} rule.
+
+Additionally, one can also visualize the results with a graph.
+
+```{r echo = TRUE, message=FALSE, fig.align='center', warning=FALSE}
+plot(rules.trans_level2, method="graph", cex=0.7, shading="lift")
+```
+
+The second part of the analysis will be looking for the relationships between individual items and groups of items. In order to do that, I will use addAggregate() function and then run Apriori algorithm.
+
+```{r echo = TRUE, message=FALSE}
+multilevel <- addAggregate(Groceries, "level2")
+inspect(head(multilevel)) # the * indicates group-level items
+```
+
+```{r echo = TRUE, message=FALSE, include=FALSE}
+rules_multilevel <- apriori(multilevel, parameter = list(support = 0.05, conf = 0.5))
+```
+
+```{r echo = TRUE, message=FALSE}
+inspect(head(rules_multilevel))
+```
+
+It occured that all of the printed transactions are spurious. It means that the lhs and rhs are refer to the same product. For example, the first transaction is {canned beer} => {beer*} which means that if the customer buys canned beer, he will also tend to buy an item from beer group. In order to filter the spurious transactions, one can use filterAggregate().
+
+```{r echo = TRUE, message=FALSE}
+rules <- filterAggregate(multilevel)
+rules
+```
+
+After filternig, none transaction left. Thus, all of the transactions were in fact spurious and this analysis doesn't bring added value.
+
+### Other quality measures
+
+Besides support, confidence and lift, there are also other varied measures which refer to association rules quality. Among others, worth to mention are Jaccard index and affinity. 
+
+Jaccard index tells how much likely are two items to be bought together. It is represented as conditional probability. The formal equation is as follows ^(http://michael.hahsler.net/research/association_rules/measures.html#jaccard):
+
+$$Jaccard(X=>Y) = \frac{supp(X∪Y)}{supp(X)+supp(Y)-supp(X∪Y)}$$
+
+In R, Jaccard index can be calculated with dissimilarity() function, setting "jaccard" as a method.
+
+```{r echo = TRUE, message=FALSE}
+trans <- Groceries[,itemFrequency(Groceries)>0.1]
+jaccard <- dissimilarity(trans, which="items", method = "jaccard")
+round(jaccard, 2) 
+```
+
+The result is a matrix with conditional probabilities. The higher the values of Jaccard index the more less likely are two items to occur in the same transaction. According to the output, the least probable is soda and root vegetables occuring together.
+
+Affinity is on the other hand a similarity measure. The higher the value the higher similarity. The formal equation is as follows^(https://rdrr.io/cran/arules/man/affinity.html):
+
+$$A(X,Y) = \frac{supp(X, Y)}{supp(X)+supp(Y)-supp(X, Y)}$$
+
+```{r echo = TRUE, message=FALSE}
+aff <- affinity(trans)
+round(aff, 2) 
+```
+
+One can easily spot that values for particular items sums to 1 when Jaccard index added to affinity measure. Maximum sililarity is observed for whole milk and other vegetables which confirms revious conclusions.
+
+The last part of the quality measures analysis will be visualization of the above matrix. The more red the rectangle, the more similar the items. 
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+image(aff, axes = FALSE)
+axis(1, at=seq(0,1,l=ncol(aff)), labels=rownames(aff), cex.axis=0.6, las=2)
+axis(2, at=seq(0,1,l=ncol(aff)), labels=rownames(aff), cex.axis=0.6, las=1.5)
+```
+
+Most of the rectangles are yellow and orange, which is as expected. In the data, items are not very similar to each other, which means the overall probability of seeing them together is not higher than 0.2.
+
+### Conclusions
+
+Since association rules are very useful in setting a strategy of the store, I will try to point a few conclusions out of the above analysis. 
+
+1. Concerning the least sold products which are baby food, sound storage medium, preservation products, kitchen utensil, bags, frozen chicken, baby cosmetics, toilet cleaner, salad dressing and whisky, the store managers should consider to:
+    * withdraw them from sale in order to not warehouse unprofitable items,
+    * set a sales promotion (3 for 2 or the third one for 50% the price) or promotion by combining these products with more popular ones (e.g. vegetables with salad dressing, soda and whisky, etc.), 
+    * create a nice advertising or a thematic booth in the store (e.g. "Everything you need in your kitchen" with the Ikea-like exhibition).
+
+2. Concerning the association rules, the store managers should consider to:
+    * place booth with dairy products near fruits, vegetables, backed goods and sausages,
+    * run cross-marketing camiangn,
+    * inform customers who bought any of the abovementioned products about the promotion of the other ones.

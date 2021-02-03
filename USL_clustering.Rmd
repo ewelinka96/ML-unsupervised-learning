@@ -1,0 +1,503 @@
+---
+title: "Clustering of wines - flat, hierarchical and fuzzy algorithms"
+author: "Ewelina Osowska"
+date: ''
+output:
+  html_document:
+    toc: yes
+---
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 110)
+```
+
+### Introduction
+
+Clustering is a field of unsupervised learning which is used as a technique of identifying subgroups in the data if the lables are not provided. It can be applied to any kind of data and thus it has a number of different applications, e.g. customer segmentation, document clustering or identifying crime localities. One can distinguish many types of clustering algorithms from which the most popular are partitional (flat) algorithms, hierarchical algorithms, fuzzy algorithms and density based algorithms. 
+
+In this study, I will try to find the best clustering approach which will group different wines in the most efficient and stable way. In order to do this, I will implement different partitional, hierarchical and fuzzy algorithms.
+
+### Dataset
+
+The data used to conduct analysis is Wine Data Set which consists of chemical substances in order to determine the origin of wines. It was provided by the UCI Machine Learning Repository (https://archive.ics.uci.edu/ml/datasets/Wine). It can be imported directly from the website through foreign::read.table() function.
+
+```{r echo = TRUE, message=FALSE}
+# loading the dataset
+library(foreign)
+wine_data <- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/wine/wine.data", sep=",")
+wine = wine_data[,-1] # first column is a class label
+```
+
+```{r echo = FALSE, message=FALSE}
+variables <- matrix(c(
+  "V2", "Alcohol",
+  "V3", "Malic acid",
+  "V4", "Ash",
+  "V5", "Alcalinity of ash",
+  "V6", "Magnesium",
+  "V7", "Total phenols",
+  "V8", "Flavanoids",
+  "V9", "Nonflavanoid phenols",
+  "V10", "Proanthocyanins",
+  "V11", "Color intensity",
+  "V12", "Hue",
+  "V13", "OD280/OD315 of diluted wines",
+  "V14", "Proline"), 
+  ncol=2,byrow=TRUE)
+colnames(variables) <- c("Variable Name", "Variable description")
+library(knitr)
+kable(variables)
+```
+
+### Initial analysis
+
+In the first steps of the analysis, I will inspect the detailed information of the data, calculate basic statistics and explore the relationship between variables.
+
+```{r echo = TRUE, message=FALSE}
+cat("Number of different wines in the dataset:", nrow(wine))
+```
+
+```{r echo = TRUE, message=FALSE}
+cat("Number of features describing wines:", ncol(wine))
+```
+
+Following output shows basic statistics of the wine characteristics. These are minimum value, 1st quantile, median, mean, 3rd quantile and maximum value. 
+
+```{r echo = TRUE, message=FALSE}
+summary(wine)
+```
+
+Since the values of variables are on different scales I will normalize them using scale() function in order to get proper and interpretable results.
+
+```{r echo = TRUE, message=FALSE}
+wine <- scale(wine)
+```
+
+Next step will be examining the relationship between variables. 
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(corrplot)
+wine_matrix <- data.matrix(wine, rownames.force = NA)
+M <- cor(wine_matrix)
+corrplot(M, method = "number", number.cex = 0.75, order="hclust")
+```
+
+From the correlation matrix one can see that dataset contains some highly correlated features, eg. flavanoids and total phenols (0.86), OD280/OD315 of diluted wines and flavanoids (0.79), OD280/OD315 of diluted wines and total phenols (0.7), flavanoids and proanthocyanins (0.65) or proline and alcohol (0.64). The highest dependencies (over 0.6) are mainly positive.
+
+In other to check if the dataset contains outliers, one can calculate interquartile range statistic. The equation is as follows:
+
+$$IQR = Q_3 - Q_1$$
+
+```{r echo = TRUE}
+vars <- c(colnames(wine))
+Outliers <- c()
+for(i in vars){
+  max <- quantile(wine[,i], 0.75) + (IQR(wine[,i]) * 1.5 )
+  min <- quantile(wine[,i], 0.25) - (IQR(wine[,i]) * 1.5 )
+  idx <- which(wine[,i] < min | wine[,i] > max)
+  print(paste(i, length(idx), sep=' ')) # printing variable and number of potential outliers 
+  Outliers <- c(Outliers, idx) 
+}
+```
+
+It seems that the statistic indicated up to four outliers in particular features. Let's now plot these variables which were indicated to contain outliers.
+
+```{r echo = TRUE, fig.align='center'}
+par(mfrow=c(2,2))
+colnames <- colnames(wine[,c(2:5,9:11)])
+for (i in colnames) {
+  plot(wine[,i], main = paste("Plot of ", i), ylab = i)
+}
+```
+
+After examining the plots, I decided not to exclude any of the observations from the analysis.
+
+In order to choose the clustering algorithm best fitted to the data, one must consider characteristics of the dataset. From initial analysis, we know that we deal with continuous variables and most of them are correlated (mainly positively). Dataset doesn't contain worrisome outliers.
+
+### Prediagnostics
+
+I will start with running prediagnostics in order to check wheather data can be clustered and also to choose the optimal number of clusters.
+
+In order to assess clusterability of the data, I will run Hopkins statistic. The null hypothesis tells that the dataset is uniformly distributed and does not contain meaningful clusters. 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+library(clustertend)
+library(factoextra)
+get_clust_tendency(wine, 2, graph=TRUE, gradient=list(low="red", mid="white", high="blue"))
+```
+
+Hopkins statistc is equal to 0.31. As this value is less then 0.5, we can conclude that the dataset is significantly clusterable. The same conclusion can be made based on based on the ordered dissimilarity plot. One can see fields of different colors which indicate that there is possibility of finding clusters in the data. 
+
+Next step will be finding the optimal number of clusters. To do this, I will use silhouette statistic and apply it to three flat clustering algorithms: k-means, PAM and CLARA, hierarchical clustering and fuzzy clustering. 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+library(gridExtra)
+a <- fviz_nbclust(wine, FUNcluster = kmeans, method = "silhouette") + theme_classic() 
+b <- fviz_nbclust(wine, FUNcluster = cluster::pam, method = "silhouette") + theme_classic() 
+c <- fviz_nbclust(wine, FUNcluster = cluster::clara, method = "silhouette") + theme_classic() 
+d <- fviz_nbclust(wine, FUNcluster = hcut, method = "silhouette") + theme_classic() 
+e <- fviz_nbclust(wine, FUNcluster = cluster::fanny, method = "silhouette") + theme_classic() 
+grid.arrange(a, b, c, d, e, ncol=2)
+```
+
+According to silhouette statistic, the optimal number of clusters is three for flat and hierarchical algorithms and two for fuzzy. 
+
+### Flat clustering
+
+As to partitional clustering, the most popular algorithms are k-means, PAM and CLARA. However, in this chapter only k-means and PAM will be implemented. That is because CLARA is a PAM algorithm implementation for large datasets. Rather than the whole dataset, it uses subsets od the data in order to generate clusters. Each subset is partitioned into k clusters using the same algorithm as in PAM. Considering that the dataset we are using in the analysis is rather small, it is not needed to run CLARA.
+
+The other thing is that considering the linear dependency of the variables, important step in flat clustering is to find the distance which will be proper for this kind of data. One can consider at least two of them: Pearson's correlation and Mahalanobis distance. Mahalanobis distance is usually used if two variables have some degree of covariance. It rescales the data in a way that the there is no covariance after all. The formal equation of tha Mahalanobis distance is as follows:
+
+$$D^2 = (x- \bar x)^TS^{-1}(x- \bar x)$$
+In the analysis, I will compare performance of the algorithm using these distances and also very common Euclidian distance.
+
+**K-means**
+
+The basic concept of k-means is that it takes cluster centres (means) to represent cluster. Its goal is to minimize square error of the intra-class dissimilarity. It measn that the algorithm aims to the situation in which clusters are consistent and different from each other.
+
+*Pearson correlation*
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+library(factoextra)
+cl_kmeans <- eclust(wine, k=3, FUNcluster="kmeans", hc_metric="pearson", graph=FALSE)
+a <- fviz_silhouette(cl_kmeans)
+b <- fviz_cluster(cl_kmeans, data = wine, elipse.type = "convex") + theme_minimal()
+grid.arrange(a, b, ncol=2)
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+table(cl_kmeans$cluster, wine_data$V1)
+```
+
+*Euclidean distance*
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+cl_kmeans1 <- eclust(wine, k=3, FUNcluster="kmeans", hc_metric="euclidean", graph=FALSE)
+g <- fviz_silhouette(cl_kmeans1)
+h <- fviz_cluster(cl_kmeans1, data = wine, elipse.type = "convex") + theme_minimal()
+grid.arrange(g, h, ncol=2)
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+table(cl_kmeans1$cluster, wine_data$V1)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+# kiedyś będzie k-means with mahalanobis distance
+```
+
+Summarizing above results it occurs that there is basically no difference between Pearson's correlation and Euclidean distance. Silhouette statistic for both is equal to 0.28. As to accuracy, both methods seems to wrongly assign labels of class 2 and 3. Thus number of wrongly assigned wines is 116.
+
+**PAM **
+
+PAM is so called medoid-based method which means that is chooses datapoints as centers (medoids) of the clusters. It is generally more robust to outliers than k-means since it uses median instead of mean.
+
+*Pearson correlation*
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+cl_pam <- eclust(wine, k=3, FUNcluster="pam", hc_metric="pearson", graph=FALSE)
+c <- fviz_silhouette(cl_pam)
+d <- fviz_cluster(cl_pam, data = wine, elipse.type = "convex") + theme_minimal()
+grid.arrange(c, d, ncol=2)
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+table(cl_pam$cluster, wine_data$V1)
+```
+
+*Euclidean distance*
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+cl_pam1 <- eclust(wine, k=3, FUNcluster="pam", hc_metric="euclidean", graph=FALSE)
+i <- fviz_silhouette(cl_pam1)
+j <- fviz_cluster(cl_pam1, data = wine, elipse.type = "convex") + theme_minimal()
+grid.arrange(i, j, ncol=2)
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+table(cl_pam1$cluster, wine_data$V1)
+```
+
+*Mahalanobis distance*
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+library(ClusterR)
+cl_pam2 <- Cluster_Medoids(wine, 3, distance_metric = "mahalanobis", verbose = FALSE, seed = 1)
+Silhouette_Dissimilarity_Plot(cl_pam2, silhouette = TRUE)
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+table(cl_pam2$clusters, wine_data$V1)
+```
+
+Comparing above PAM implementaitons it occurs that there is also no difference between Pearson's correlation and Euclidean distance, just like in case of k-means. Silhouette statistic for both is equal to 0.27 and the number of wrongly assignes labels for both is 16. In case of Mahalanobis distance the silhouette statistic is much lower (0.065). The number of wrongly assignes labels is 64. Thus there is no advantage from using distance different than Euclidean one.
+
+To sum up and compare the results obtained with k-means and PAM, it occured that PAM with euclidian distance performed the best in case of efficiency. 
+
+However, besides testing for efficiency, clustering validation involves also testing for stability of the clusters. It refers to the situation in which clusters remain the same even though there are changes in initial dataset, e.g. making subsamples or adding noise to the data. Most common method to test for stability is bootstrap. It is provided in R by the fpc::clusterboot() function. One has to specify at least three parameters in order to get the result. These are clustering method, method and number of clusters. Chosen clustering method is pamkCBI and the number of clusters remains 3.
+
+```{r echo = TRUE, message=FALSE, include=FALSE}
+library(fpc)
+dm <- dist(wine, method = "euclidean")
+cboot.hclust <- clusterboot(dm, clustermethod=pamkCBI, k=3, seed = 1)
+```
+
+```{r echo = TRUE, message=FALSE}
+cboot.hclust$bootmean 
+```
+
+The above vector indicates the cluster stability. Considering that value equal to 1 means perfectly stable cluster, we may assume that three obtained clusters are highly stable with the clusterwise means of the bootresult equal to 0.91, 0.87 and 0.95.
+
+```{r echo = TRUE, message=FALSE}
+cboot.hclust$bootbrd 
+```
+
+The bootbrd component indicate how many times each cluster was dissolved. It means that out of 100 bootstrap iterations no cluster was ever dissolved.
+
+```{r echo = TRUE, message=FALSE}
+cboot.hclust$bootrecover
+```
+
+Analogical component to the provious one is bootrecover which indicates number of times a cluster has been successfully recovered. It means that out of 100 bootstrap iterations all cluters recovered successfully.
+
+Taking into account all these information, we can assume clusters separated using PAM to be highly stable. I will later compare performance of this algorithm with the best algorithms obtained in the further custering analysis. 
+
+### Hierarchical clustering
+
+Hierarchical clustering, as the name indicates, is based on building the hierarchy of clusters. There are two types of hierarchical clustering: agglomerative (bottom-up approach; HAC or AGNES) and divisive (top-down approach; DIANA). The main difference between these two approaches is that in agglomerative clustering each observation starts in its own cluster and it is getting aggregared. On the other hand, in divisive clustering all observations start in one cluster and then are divided into smaller clusters, resulting in the situation that there is one cluster for each observation.
+
+In order to cluster data agglomeratively, one may use stats::hclust() or cluster::agnes() functions. I will implement the first one. To do this, firstly the dissimilarity matrix has to be computed, e.g. using dist() function. Inside the hclust(), one must also specify the linkage method. There are several options, including among others single linkage, complete linkage, average linkage and Ward's method. As to single linkage, the distance between clusters is measured as the distance between the closests members of two clusters. In complete linkage, the distance between clusters is equal to the the distance between most disimilar members of two clusters. Average linkage takes as the distance between clusters the average distance from any data point in one cluster to any data point in the other cluster. On the other hand, Ward’s method aims to minimize the total within-cluster variance which measures the compactness of the clustering.
+
+#### Agglomerative hierarchical clustering
+
+The approach which I will apply in the analysis will be conducting clustering with the use of four abovementioned methods and comparing the clustering results with the class label assign to each observation.
+
+The following plots represents dendrogram of agglomerative hierarchical clustering algorithm assuming three clusters beforehand.
+
+**Single linkage**
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+hc <- eclust(dm, k=3, FUNcluster="hclust", hc_metric="euclidean", hc_method = "single")
+plot(hc, cex=0.6, hang=-1, main = "Dendrogram of HAC")
+rect.hclust(hc, k=3, border='red')
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE}
+clusterCut <- cutree(hc, 3)
+table(clusterCut, wine_data$V1)
+```
+
+**Complete linkage**
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+hc1 <- eclust(dm, k=3, FUNcluster="hclust", hc_metric="euclidean", hc_method = "complete")
+plot(hc1, cex=0.6, hang=-1, main = "Dendrogram of HAC")
+rect.hclust(hc1, k=3, border='red')
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE}
+clusterCut1 <- cutree(hc1, 3)
+table(clusterCut1, wine_data$V1)
+```
+
+**Average linkage**
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+hc2 <- eclust(dm, k=3, FUNcluster="hclust", hc_metric="euclidean", hc_method = "average")
+plot(hc2, cex=0.6, hang=-1, main = "Dendrogram of HAC")
+rect.hclust(hc2, k=3, border='red')
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE}
+clusterCut2 <- cutree(hc2, 3)
+table(clusterCut2, wine_data$V1)
+```
+
+**Ward's method**
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+hc3 <- eclust(dm, k=3, FUNcluster="hclust", hc_metric="euclidean", hc_method = "ward.D2")
+plot(hc3, cex=0.6, hang=-1, main = "Dendrogram of HAC")
+rect.hclust(hc3, k=3, border='red')
+```
+
+Efficiency testing:
+```{r echo = TRUE, message=FALSE}
+clusterCut3 <- cutree(hc3, 3)
+table(clusterCut3, wine_data$V1)
+```
+
+It occured that the most accurate is Ward's method. In this case only four observations were wrongly assigned to the cluster. Thus, further analysis wil be conducted uning Ward's method. In order to know more details about the division, I will run cluster.stats() function and display some of the basic statistic of the clustering object.
+
+```{r echo = TRUE, message=FALSE}
+library(fpc)
+hc_stats <- cluster.stats(dm, hc3$cluster)
+hc_stats$cluster.size # number of observations per cluster
+hc_stats$within.cluster.ss # within cluster sum of squares
+hc_stats$avg.silwidth # average silhouette width
+hc_stats$clus.avg.silwidths # average silhouette widths for each cluster
+```
+
+The algorithm created three clusters with the count of observation equal to 57, 73 and 48. The within cluster sum of squares is equal to 1306.37. The average silhouette width is 0.275. The average silhouette widths for each cluster are 0.41, 0.10 and 0.38.
+
+Another valuable statistic is Dunn Index counted among relative criterion of efficiency of clustering. Higher Dunn index indicates better clustering which means that clusters are compact and well-separated from other clusters. It can be calculated by dividing the minimum separation by maximum diameter. These values are result of the eclust() function.
+
+```{r echo = TRUE, message=FALSE}
+hc_stats$min.separation
+hc_stats$max.diameter
+dunn <- hc_stats$min.separation / hc_stats$max.diameter
+cat("Dunn Index is equal to", round(dunn, 2))
+```
+
+One can also calculate the agglomerative coefficient which is a measure of the clustering structure. Low values indicate tight clustering, higher values indicate less well-formed clusters. 
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(cluster)
+cat("Agglomerative coefficient is equal to", round(coef.hclust(hc3), 2))
+```
+
+#### Divisive hierarchical clustering
+
+As to divisive hierarchical clustering, it can be implemented using cluster::diana() function. Here, the only parameter within function which has to be set is the number of clusters.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+hc4 <- eclust(dm, k=3, FUNcluster="diana")
+pltree(hc4, cex = 0.6, hang = -1, main = "Dendrogram of DIANA")
+rect.hclust(hc4, k=3, border='red')
+```
+
+```{r echo = TRUE, message=FALSE}
+clusterCut4 <- cutree(hc4, 3)
+table(clusterCut4, wine_data$V1)
+```
+
+It is clearly visible that the algorithm performed worse than the best one using agglomerative approach. This is also confirmed by the following statistics which were also calculated for the clustering object in which Ward's method was used.
+
+```{r echo = TRUE, message=FALSE}
+hc_stats1 <- cluster.stats(dm, hc4$cluster)
+hc_stats1$cluster.size # number of observations per cluster
+hc_stats1$within.cluster.ss # within cluster sum of squares
+hc_stats1$avg.silwidth # average silhouette width
+hc_stats1$clus.avg.silwidths # average silhouette widths for each cluster
+```
+
+```{r echo = TRUE, message=FALSE}
+dunn <- hc_stats1$min.separation / hc_stats1$max.diameter
+cat("Dunn Index is equal to", round(dunn, 2)) 
+```
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+cat("Divisive coefficient is equal to", round(coef(hc4), 2))
+```
+
+As done before, the last step of the clustering algorithm assesment will be stability validation using fpc::clusterboot() function. In this case, I chose hclustCBI as clustering method which is an interface to the function hclust with optional noise cluster. As method, I chose Ward's method since it was the best performing option. Number of clusters remains the same.
+
+```{r echo = TRUE, message=FALSE, include=FALSE}
+cboot.hclust1 <- clusterboot(dm, clustermethod=hclustCBI, method="ward.D2", k=3, seed = 1)
+```
+
+```{r echo = TRUE, message=FALSE}
+cboot.hclust1$bootmean 
+```
+
+The clusterwise means of the bootresult are equal to 0.84, 0.92 and 0.77. We can say that the first two clusters seems to be highly stable while the third cluster is only quite stable.
+
+```{r echo = TRUE, message=FALSE}
+cboot.hclust1$bootbrd
+```
+
+As to bootbrd component, it occures that out of 100 bootstrap iterations the first cluster was dissolved one, the second cluster wasn't dissolved at all and the third cluster was dissolved 3 times. 
+
+```{r echo = TRUE, message=FALSE}
+cboot.hclust1$bootrecover 
+```
+
+Talking about successfull recovery, it seems that out of 100 bootstrap iterations the first cluster did not recover 17 times, the second cluster did not recover 6 times and the third cluster did not recover 41 times.
+
+### Fuzzy clustering
+
+Fuzzy clustering is an algorithm in which each element has a probability of belonging to patricular cluster not just a binary membership as it is in hard clustering algorithms. Thus, the result will be degrees of membership for each observation in each cluster. Fuzzy clustering can be implemented in R using cluster::fanny() function. In the function, one has to specify at least three parametres: number of clusters, membership exponent and metric to be used for calculating dissimilarities. In our case, the algorithm indicated that the optimal number of clusters in fuzzy clustering is two. In order to chech acuracy of the algorithm, I will also run algorithms assuming number of clusters equal 2. As to membership exponent, I will set three levels (1.2, 1.5 and 2) in order to spot the difference between the outputs and decide which one to choose. Metric which I will use is Euclidian distance. 
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+library(cluster)
+clust_fanny <- fanny(dm, k=2, diss=TRUE, memb.exp = 1.2, metric = "euclidean")
+head(clust_fanny$membership, n=10)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+library(cluster)
+clust_fanny1 <- fanny(dm, k=3, diss=TRUE, memb.exp = 1.2, metric = "euclidean")
+head(clust_fanny1$membership, n=10)
+```
+
+```{r echo = TRUE, message=FALSE}
+clust_fanny2 <- fanny(dm, k=2, diss=TRUE, memb.exp = 1.5, metric = "euclidean")
+head(clust_fanny2$membership, n=10)
+```
+
+```{r echo = TRUE, message=FALSE}
+clust_fanny3 <- fanny(dm, k=3, diss=TRUE, memb.exp = 1.5, metric = "euclidean")
+head(clust_fanny3$membership, n=10)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+clust_fanny4 <- fanny(dm, k=2, diss=TRUE, memb.exp = 2, metric = "euclidean")
+head(clust_fanny4$membership, n=10)
+```
+
+```{r echo = TRUE, message=FALSE, warning=FALSE}
+clust_fanny5 <- fanny(dm, k=3, diss=TRUE, memb.exp = 2, metric = "euclidean")
+head(clust_fanny5$membership, n=10)
+```
+
+Based on the above output, one can easily see that with the increase of membership exponents, the probabilities of membership in both clusters are equal. 
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+a <- fviz_silhouette(clust_fanny)
+b <- fviz_silhouette(clust_fanny2)
+c <- fviz_silhouette(clust_fanny4)
+grid.arrange(a, b, c, ncol=1)
+```
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+d <- fviz_silhouette(clust_fanny1)
+e <- fviz_silhouette(clust_fanny3)
+f <- fviz_silhouette(clust_fanny5)
+grid.arrange(d, e, f, ncol=1)
+```
+
+Changes of the membership exponent and number of clusters resulted in changes of silhouette statistic. The highest silhouette is seen for three clusters and membership exponent equal to 1.2. Thus, next step will be testing for clustering accuracy for clust_funny1 object.
+
+```{r echo = TRUE, message=FALSE}
+table(clust_fanny1$clustering, wine_data$V1)
+```
+
+Unfortunately, I didn't find pertinent implementation of fuzzy algorithm bootstraping which I conducted in the previous part od the study. However, assuming that it is still a weaker alforthm in case of efficiency than hierarchical clustering and that PAM in case of stability is a very strong one, I will stay with these algorithm as leader in particular fields. Nevertheless, I will not stop looking for the right answer (or in the end I will write my own function) in order to conduct valid validation.
+
+### Conclusions
+
+The best algorithm in case of efficiency occured to be agglomerative hierarchical clustering using Ward's method as a linkage. However, in case of stability, the best one out of the ones which were validated is PAM using Euclidean distance. Choice of particular algorithm and its advantages is usually driven by business need and there is usually trade-off like in this case. Thus, I will not point out the best algorithm since it is subjective.
+
+Sources:    
+http://www.unuftp.is/static/files/rannsoknarritegrdir/WarshaSingh_MastersThesis.pdf    
+https://www.r-bloggers.com/bootstrap-evaluation-of-clusters/     
+https://www.rdocumentation.org/packages/fpc/versions/2.1-11.1/topics/clusterboot     
+http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.331.1569&rep=rep1&type=pdf     
+https://www.sciencedirect.com/science/article/pii/S016501141500216X?via%3Dihub     

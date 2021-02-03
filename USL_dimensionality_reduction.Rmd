@@ -1,0 +1,494 @@
+---
+title: "Credit cards data - dimensionality reduction techniques and clustering"
+author: "Ewelina Osowska"
+date: "7 03 2019"
+output: html_document
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Summary 
+   
+The dataset used in analysis consists mostly of behavioral and non-labeled data related to credit cards transactions. Main goal is to indicate customer segments best fitted to the data by implementing clustering. Based on dataset characteristics which are high-dimensionality and presence of correlated variables, I will compare the result of clustering based on original data with the results obtained after implementing relevant algorithm to reduce dimensionality and correlation.
+
+### Dataset description
+
+Chosen dataset contains 8950 observations and 18 variables. It was provided by Kaggle user - arjunbhasin2013. In the table below, you can see the names of variables with its descriptions.
+
+```{r, echo = FALSE, warning = FALSE, message=FALSE}
+variables <- matrix(c("CUST_ID", "Credit card holder ID", 
+                      "BALANCE", "Monthly average balance (based on daily balance averages)",
+                      "BALANCE_FREQUENCY", "Ratio of last 12 months with balance",
+                      "PURCHASES", "Total purchase amount spent during last 12 months", 
+                      "ONEOFF_PURCHASES", "Total amount of one-off purchases", 
+                      "INSTALLMENTS_PURCHASES", "Total amount of installment purchases",
+                      "CASH_ADVANCE", "Total cash-advance amount", 
+                      "PURCHASES_ FREQUENCY", "Frequency of purchases (percentage of months with                        at least one purchase)", 
+                      "ONEOFF_PURCHASES_FREQUENCY", "Frequency of one-off-purchases",
+                      "PURCHASES_INSTALLMENTS_FREQUENCY", "Frequency of installment purchases",
+                      "CASH_ADVANCE_FREQUENCY", "Cash-Advance frequency", 
+                      "AVERAGE_PURCHASE_TRX", "Average amount per purchase transaction", 
+                      "CASH_ADVANCE_TRX", "Average amount per cash-advance transaction", 
+                      "PURCHASES_TRX", "Average amount per purchase transaction", 
+                      "CREDIT_LIMIT", "Credit limit", 
+                      "PAYMENTS", "Total payments (due amount paid by the customer to decrease their statement                          balance) in the period", 
+                      "MINIMUM_PAYMENTS", "Total minimum payments due in the period",
+                      "PRC_FULL_PAYMENT", "Percentage of months with full payment of the due statement balance", 
+                      "TENURE", "Number of months as a customer"), 
+                    ncol=2,byrow=TRUE)
+colnames(variables) <- c("Variable Name", "Variable description")
+library(knitr)
+kable(variables)
+```
+
+```{r, echo = TRUE, warning = FALSE, message=FALSE}
+library(readr)
+library(kableExtra)
+# reading the dataset
+data <- read.csv("~/Desktop/USL_project1/CC GENERAL.csv")
+# displaying the dataset
+kable(head(data[-1], n = 10)) %>%
+  kable_styling(bootstrap_options = c("hover", "condensed", "responsive")) %>%
+  scroll_box(width = "100%", height = "90%")
+```
+
+### Exploratory data analysis
+
+In the first step, I will focus on basic statistics of the features, searching for missing data, any potencially informative values and also on examining correlations between variables. 
+
+```{r echo = TRUE, warning = FALSE, message=FALSE}
+# shortening variables' names
+colnames(data) <- c("CUST_ID", "BAL","BAL_FREQ", "PURCH", "ONEOFF_PURCH", "INST_PURCH", "CASH_ADV", "PURCH_FREQ","ONEOFF_PURCH_FREQ", "PURCH_INST_FREQ", "CASH_ADV_FREQ","CASH_ADV_TRX", "PURCH_TRX", "CREDIT_LIMIT", "PAY", "MIN_PAY", "PRC_FULL_PAY", "TENURE")
+
+# displaying basic statistics
+kable(summary(data[,-1])) %>% 
+  kable_styling(bootstrap_options = c("hover", "condensed", "responsive")) %>%
+  scroll_box(width = "100%", height = "100%")
+```
+ 
+The dataset consists mostly of continuous variables except for CASH_ADVANCE_TRX, PURCHASES_TRX and TENURE which represent integer values. It contains only 1 NA value in case of CREDIT_LIMIT and 313 NA values in MINIMUM_PAYMENTS. As long as there are not many missings and the dataset is extended, these observations may be deleted. 
+
+Starting with MINIMUM_PAYMENTS variable, one must spot that NA value occures only if PAYMENT variable is equal to zero. Thus in this situation, I will just replace missing values with zeros. 
+
+```{r echo = TRUE, message=FALSE}
+library(dplyr)
+# filtering observations for which PAYMENTS is equal to zero and comparing them with MINIMUM PAYMENTS variable
+data1 <- data %>% 
+           select(PAY, MIN_PAY) %>% 
+           filter(PAY == 0)
+# displaying first five observations after the filtering process
+head(data1, n = 5)
+```
+
+ 
+```{r echo = TRUE}
+data$MIN_PAY[is.na(data$MIN_PAY)] <- 0
+summary(data$MIN_PAY)
+```
+
+In case of variable CREDIT_LIMIT, I will just delete NA values because there is only 1 observation like that and deleting it will not influence much the dataset because of its volume.
+ 
+```{r echo = TRUE}
+data <- data[!(is.na(data$CREDIT_LIMIT)),]
+```
+
+In order to look for potential outliers, I will implement univariate approach and apply IQR rule. This rule searches for outliers in both tails of variable's density distribution. 
+  
+\begin{center}
+Left tail: Q1 - 1.5 * IQR  
+Right tail: Q3 + 1.5 * IQR 
+\end{center}  
+   
+Following loop will return all variables and the number of potential outliers among their values.
+
+```{r echo = TRUE}
+# Calculating interquartile range for all variables in the dataset
+vars <- c(colnames(data)[-1])
+Outliers <- c()
+for(i in vars){
+  max <- quantile(data[,i], 0.75) + (IQR(data[,i]) * 1.5 )
+  min <- quantile(data[,i], 0.25) - (IQR(data[,i]) * 1.5 )
+  idx <- which(data[,i] < min | data[,i] > max)
+  print(paste(i, length(idx), sep=' ')) # printing variable and number of potential outliers 
+  Outliers <- c(Outliers, idx) 
+}
+```
+
+The number of potential outliers is high. Thus, the right approach will be to implement algorithm which is insensitive to outliers.
+
+The last step in exploratory data analysis will be calculating correlation matrix. Inspecting the relationship between variables is very important because passing highly correlated or collinear variables may disrupt the algorithm and eventually affect distinguished clusters. The strenght of affection depends on correlation magnitude. High correlation between two variables means that they have similar trends and are likely to carry similar information. If two variables are perfectly correlated, the concept represented by both variables is now represented twice in the data. The final solution is thus likely to be skewed in the direction of that concept. It's nothing but creating artificial features.
+
+Informations which are visible with the naked eye are that PURCHASES variable is the sum of ONEOFF_PURCHASES and INSTALLMENTS_PURCHASES. Analogical problem concern variable PURCHASES_FREQUENCY which is the sum of ONEOFF_PURCHASES_FREQUENCY and PURCHASES_INSTALLMENTS_FREQUENCY.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+colnames(data)[-1] <- c("V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10", "V11", "V12", "V13", "V14", "V15", "V16", "V17")
+library(corrplot)
+data_matrix <- data.matrix(data, rownames.force = NA)
+M <- cor(data_matrix[,-1])
+corrplot(M, method = "number", number.cex = 0.6, order = "AOE")
+```
+
+In the dataset we may observe mainly positively correlated variables. As mentioned earlier, variables PURCHASES, ONEOFF_PURCHASES and INSTALLMENTS_PURCHASES seem to be highly correlated. Moreover, high correlation occur in case of variables CASH_ADV, CASH_ADV_FREQ and CASH_ADV_TRX and also PURCH_INST_FREQ and PURCH_FREQ. 
+
+### Clustering 
+
+Due to outliers, I will rely on k-medoids algorithm as it is more robust to noise in comparison with very popular k-means algorithm. The most common algorithm of the k-medoid clustering is the Partitioning Around Medoids (PAM) clustering. Although PAM performs well on small datasets, it cannot scale for large datasets. Thus, in case of analysed dataset it would be more effective to implement CLARA (Clustering for Large Applications). CLARA draws saples of the data and applies the PAM algorithm to find an optimal set of medoids for the sample. The quality of resulting medoids is measured by the average dissimilarity between every object in the entire data set and the medoid of its cluster, defined as the cost function. CLARA repeats the sampling and clustering processes a pre-specified number of times in order to minimize the sampling bias. The final clustering results correspond to the set of medoids with the minimal cost. 
+
+Bearing in mind correlated variables, I will distinguish two approaches to validate which one performs better. In the first one, I will pass all variables into clustering algorithm and execute the algorithm using two distance metrices which are based on correlation magnitude. These are Pearson's correlation and Mahalanobis distance. Second approach will be based on proncipal components. After implementing algorithm, I will run PAM clustering.
+
+For most of the analysis, I will use ClusterR package since it provides all algorithms and distance metrics which I needed. The documentation of the package is available on a website https://cran.r-project.org/web/packages/ClusterR/ClusterR.pdf. 
+
+**First approach - passing all variables into clustering algorithm**
+
+First step before applying any clustering algorithm will be finding the optimal number of clusters using silhouette statistic. To do that, I will use function factoextra::fviz_nbclust() and apply it to PAM, CLARA and k-means.
+
+```{r echo = TRUE, message=FALSE, warning=FALSE, fig.align='center'}
+library(gridExtra)
+library(factoextra)
+library(ggplot2)
+a <- fviz_nbclust(data[,-1], FUNcluster = kmeans, method = "silhouette") + theme_classic() 
+b <- fviz_nbclust(data[,-1], FUNcluster = cluster::clara, method = "silhouette") + theme_classic() 
+grid.arrange(a, b, nrow=2)
+```
+
+It occured that according to silhouette statistic, the most optimal number of clusters is 2. Thus, further analysis will be based on the assumption of two customer segments. 
+
+First implemented algorithm wil be CLARA with Pearson's correlation as a distance metric.
+
+```{r echo = TRUE, fig.align='center'}
+library(ClusterR)
+start = Sys.time()
+clm_pearson <- Clara_Medoids(data_matrix, 2, distance_metric = c("pearson_correlation"), samples = 5, sample_size = 0.2, swap_phase = TRUE, verbose = T)
+end = Sys.time()
+t = end - start
+cat('time to complete :', t, attributes(t)$units, '\n')
+```
+
+```{r echo = TRUE, message=TRUE, fig.align='center', include=FALSE}
+Silhouette_Dissimilarity_Plot(clm_pearson, silhouette = TRUE)
+```
+
+```{r echo=FALSE, out.width = '70%', fig.align='center'}
+knitr::include_graphics("V1.png")
+```
+
+
+CLARA with Pearson's correlation as a distance metric resulted in obtaining two clusters while in first cluster there are 870 customers and in the second one there are 920 customers. The value of silhouette for first and second cluster is 0.725 and 0.356 respectively. The average silhouette value is thus 0.535 which means that about half of the objects have been well clustered.
+
+The second implemented algorithm will be CLARA with Mahalanobis distance assuming two clusters in advance.
+
+```{r echo = TRUE, message=FALSE}
+start = Sys.time()
+clm_mahal <- Clara_Medoids(data_matrix, 2, distance_metric = c("mahalanobis"), samples = 5, sample_size = 0.2, swap_phase = TRUE, verbose = T)
+end = Sys.time()
+t = end - start
+cat('time to complete :', t, attributes(t)$units, '\n')
+```
+
+```{r echo = TRUE, message=TRUE, fig.align='center', include=FALSE}
+Silhouette_Dissimilarity_Plot(clm_mahal, silhouette = TRUE)
+```
+
+```{r echo=FALSE, out.width = '70%', fig.align='center'}
+knitr::include_graphics("V2.png")
+```
+
+In case of CLARA with Mahalanobis distance in teh first cluster there are 1090 objects and in the second cluster there are 700 objects. The silhouette statistic in both clusters in low which results in a low average silhouette which is 0.069. It is clearly visible that this algorithm results in worst clustering than the previous one.
+
+Below one can see basic statistics of two above algorithms. For each object there is information about number of observations in each cluster (considering clustering full dataset), maximum dissimilarity, average dissimilarity and isolation.
+
+```{r echo = TRUE, message=FALSE}
+clm_pearson$clustering_stats
+clm_mahal$clustering_stats
+```
+
+Obtained statistics confirm conclusions drawn before. Out of theese two algorithms, definately better one is CLARA with Pearson's correlation as distance metric.
+
+Next step will be applying dimensionality reduction algorithm and running CLARA algorithm on obtained principal components.
+
+#### Second approach - dimensionality reduction
+
+Dimensionality reduction aims to reduce the number of variables in the dataset and also reduce multicollinearity. There are a lot of algorithms to reduce the dimensionality. They are divided into supervisd and unsupervised techniques. Since the paper is focused on unsupervised learning algorithms, I will apply Principal Component Analysis, Multidimensional Scaling and hierarchical trees. Moreover, considering the increasing importance of neural networks, I will also compute autoencoder. In the end, I will try to compare the performance of all these techniques using logistic regression since the dataset originally contains class labels.
+
+In order to reduce the dimensions, I will implement PCA algorithm. There are several functions which might be used. The most popular ones are stats:prcomp() and stats:princomp(). The main difference between them is that prcomp() is based on singular value decomposition and princomp() is based on spectral decomposition approach. According to R documentation, more preferred method is prcomp() but no details on this topic are provided. 
+
+In this analysis, I will use prcomp() function. Since the data are not on the same scale, argument scale = TRUE should be added.
+
+```{r echo = TRUE, message=FALSE}
+data.pca <- prcomp(data[,-1], center = TRUE, scale = TRUE)
+summary(data.pca)
+```
+
+The result of the summary function shows three statistics according to all components: standard deviation, proportion of variance and cumulative variance. From the output we can see that PC1 explains 27% of variance, PC2 explains 20% of variance, PC3 explains 8% of variance, ans so on. What is more, beyond obtaining principal components the algorithm also reduced the correlation between variables since the principal components are orthogonal.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+data_matrix <- data.matrix(data.pca$x, rownames.force = NA)
+M <- cor(data_matrix)
+corrplot(M, method = "number", number.cex = 0.75)
+```
+
+In order to reduce dimensionality, the task now is to choose the optimal number of components to retain which is a topic of the next section.
+
+**Choosing the number of principal components to retain**
+
+According to Zwick and Velicer, there are at least five methods to determine the number of components to retain. One can use among others Barlletl's test, Kaiser's criterion, Minimum Average Partial method, scree test and parallel analysis (PA). Since MAP method does not have convinient R implementation, I will omit it.
+
+First implemented method will be Barlletl's test. According to Zwick and Velicer, null hipothesis of the test is that the remaining P variables - m eigenvalues are equal. Each eigenvalue is excluded sequentially  until the approximate chi-square test of the null hypothesis of equality fails to be rejected. The first m excluded components are retained. R provides function nBartlett() to conduct the test (https://cran.r-project.org/web/packages/nFactors/nFactors.pdf).
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(nFactors)
+nBartlett(data[,-1], nrow(data[,-1]), alpha=0.05, details=TRUE)
+```
+
+Unfortunately, it seems that the test failed to find the number of components to retain.
+
+Next method will be Kaiser's criterion. It says that one should retain the components with eigenvalues are greater than 1. To calculate the eigenvalues, I will use get_eigenvalue() from factoextra package. 
+
+```{r echo = TRUE, message=FALSE}
+library(factoextra)
+eig.val <- get_eigenvalue(data.pca)
+eig.val
+```
+
+Since the first eigenvalue (4.64) is higher than 1, we have support to retain the first component. The second eigenvalue (3.45) is also higher than 1, so it should also be retained. Eigenvalue higher than 1 is also for third (1.5), fourth (1.27) and fifth component (1.05). According to the rule, the remaining components shouldn't be used in further analysis.
+
+Next possible method is scree test which is based on eigenvalues graph. This method is analogical to the Kaiser's criterion and thus gives analogical results. There are several possibilities to draw the so called scree plot. One of them is provided by scree.plot() from psy package.
+
+```{r echo=TRUE, message=FALSE, fig.align='center'}
+library(psy)
+scree.plot(eig.val[,1], title = "Scree Plot", type = "E",  simu = "P")
+```
+
+The last method to be implemented is parallel analysis. R provides function hornpa() which conducts the test and returns easy to interpret results. In order to decide which components to retain, one must compare eigenvalues with the numbers in column '0.95'. If eigenvalue is hiher than the particular value returned by the function, there is a support to retain the component.
+
+```{r echo=TRUE, message=FALSE}
+library(hornpa)
+hornpa(k=17,size=8949,reps=500,seed=123)
+```
+
+In our case, the method indicates that there should be five principal components considered in the further analysis. 
+
+To sum up all the methods, three of them occured to be successful. They indicated to retain five principal components.
+
+**Graphical analysis**
+
+In order to make graphical analysis easier, I will from now make an analysis in two dimensions.
+
+# Visualization of variable's loadings {.tabset}
+
+First plot represents variable loadings which are coefficients to predict components by original variables.
+
+## PC1, PC2 {-}
+
+Variables loadings for PC1 and PC2.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(factoextra)
+fviz_pca_var(data.pca, col.var = "navy", repel = TRUE, axes = c(1, 2)) +
+  labs(title="PCA", x="PC1", y="PC2")
+```
+
+## PC2, PC3 {-}
+
+Variables loadings for PC2 and PC3.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(factoextra)
+fviz_pca_var(data.pca, col.var = "navy", repel = TRUE, axes = c(2, 3)) +
+  labs(title="PCA", x="PC2", y="PC3")
+```
+
+## PC3, PC4 {-}
+
+Variables loadings for PC3 and PC4.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(factoextra)
+fviz_pca_var(data.pca, col.var = "navy", repel = TRUE, axes = c(3, 4)) +
+  labs(title="PCA", x="PC3", y="PC4")
+```
+
+## PC4, PC5 {-}
+
+Variables loadings for PC4 and PC5.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(factoextra)
+fviz_pca_var(data.pca, col.var = "navy", repel = TRUE, axes = c(4, 5)) +
+  labs(title="PCA", x="PC4", y="PC5")
+```
+
+Above plots show the correlation between original variables as well as the strengh of each variable contribution to particular principal components. It is clear from the first plot (PC1, PC2) that e.g. cash-advance frequency and average amount per purchase transaction are positively correlated while cash-advance frequency and % of months with full payment of the due statement balance seems to be negatively correlated. Analogical conclusions may be drawn also from four other plots. The dependence is if variables are grouped together, it means they are positively correlated while if variables are positioned on opposite sides of the plot, it means that they are negatively correlated. The length of the vector tells how strong is the contribution of particular variable to particular principal component. It can be confirmed by the plots below. It presents contribution of variables to PC1, PC2, PC3, PC4 and PC5.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+library(gridExtra)
+cont1 <- fviz_contrib(data.pca, "var", axes = 1)
+cont2 <- fviz_contrib(data.pca, "var", axes = 2)
+cont3 <- fviz_contrib(data.pca, "var", axes = 3)
+cont4 <- fviz_contrib(data.pca, "var", axes = 4)
+cont5 <- fviz_contrib(data.pca, "var", axes = 5)
+grid.arrange(cont1, cont2, cont3, cont4, cont5)
+```
+
+The above charts clearly show which variables contribute the most to particular components.    
+  
+**PC1 consists of:**  
+- Total purchase amount spent during last 12 months  
+- Average amount per purchase transaction  
+- Total amount of one-off purchases  
+- Total amount of installment purchases  
+- Frequency of purchases (percentage of months with at least one purchase  
+- Frequency of one-off-purchases  
+- Frequency of installment purchases  
+- Total payments (due amount paid by the customer to decrease their statement balance) in the period  
+  
+**PC2 consists of:**  
+- Total cash-advance amount  
+- Cash-Advance frequency  
+- Average amount per purchase transaction  
+- Monthly average balance (based on daily balance averages)  
+- Credit limit  
+- Total payments (due amount paid by the customer to decrease their statement balance) in the period  
+  
+**PC3 consists of:**    
+- Frequency of installment purchases  
+- Ratio of last 12 months with balance  
+- Total amount of one-off purchases  
+- Frequency of purchases (percentage of months with at least one purchase)  
+- Total payments (due amount paid by the customer to decrease their statement balance) in the period    
+- Total purchase amount spent during last 12 months     
+- Total minimum payments due in the period  
+  
+**PC4 consists of:**   
+- Number of months as a customer   
+- Percentage of months with full payment of the due statement balance   
+- Total minimum payments due in the period   
+- Average amount per cash-advance transaction   
+- Monthly average balance (based on daily balance averages)   
+- Total cash-advance amount   
+- Cash-Advance frequency   
+   
+**PC5 consists of:**   
+- Frequency of one-off-purchases   
+- Ratio of last 12 months with balance   
+- Total minimum payments due in the period   
+- Total amount of installment purchases   
+   
+One can also visualize individual observations and the strenght of their contribution to the principal components. One can choose which observations to display on the plot. One of the possibilities is selecting the top contributing individuals. Below plots show 50 top contributing observations and also all observations.
+
+# Visualization of observations' loadings {.tabset}
+
+First plot represents variable loadings which are coefficients to predict components by original variables. It is clearly seen that the most contributing variables are placed relatively far from the origin of coordinates. 
+
+## PC1, PC2 {-}
+
+Observations' loadings for PC1 and PC2.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+fviz_pca_ind(data.pca, col.ind = "navy", repel = TRUE, select.ind = list(contrib=50), axes = c(1, 2)) +
+  labs(title="PCA", x="PC1", y="PC2")
+```
+
+## PC2, PC3 {-}
+
+Observations' loadings for PC2 and PC3.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+fviz_pca_ind(data.pca, col.ind = "navy", repel = TRUE, select.ind = list(contrib=50), axes = c(2, 3)) +
+  labs(title="PCA", x="PC2", y="PC3")
+```
+
+## PC3, PC4 {-}
+
+Observations' loadings for PC3 and PC4.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+fviz_pca_ind(data.pca, col.ind = "navy", repel = TRUE, select.ind = list(contrib=50), axes = c(3, 4)) +
+  labs(title="PCA", x="PC2", y="PC3")
+```
+
+## PC4, PC5 {-}
+
+Observations' loadings for PC4 and PC5.
+
+```{r echo = TRUE, message=FALSE, fig.align='center'}
+fviz_pca_ind(data.pca, col.ind = "navy", repel = TRUE, select.ind = list(contrib=50), axes = c(4, 5)) +
+  labs(title="PCA", x="PC2", y="PC3")
+```
+
+# Clustering of PCA
+
+Finally, after analysis of principal components, I will conduct clustering based on five subsetted principal components. In order to do that, I will use the same function as before - Clara_Medoids - and Euclidean distance. 
+
+```{r echo = TRUE, message=FALSE}
+pca_data <- data.pca$x[,1:5]
+```
+
+```{r echo = TRUE, message=FALSE}
+start = Sys.time()
+clm_eucl <- Clara_Medoids(pca_data, 2, distance_metric = c("euclidean"), samples = 5, sample_size = 0.2, swap_phase = TRUE, verbose = T)
+end = Sys.time()
+t = end - start
+cat('time to complete :', t, attributes(t)$units, '\n')
+```
+
+```{r echo = TRUE, message=TRUE, fig.align='center', include=FALSE}
+Silhouette_Dissimilarity_Plot(clm_eucl, silhouette = TRUE)
+```
+
+```{r echo=FALSE, out.width = '70%', fig.align='center'}
+knitr::include_graphics("V3.png")
+```
+
+CLARA with Euclidean distance resulted in obtaining two clusters while in first cluster there are 799 customers and in the second one there are 991 customers. The value of silhouette for first and second cluster is 0.221 and 0.306 respectively. The average silhouette value is thus 0.268. This is about twice less than in case of clustering the whole dataset using CLARA algorithm with Pearson's correlation as distance metric.
+
+The result obtained using PCA is not very satisfying. The average silhouette statistic is lower that in case of clustering the whole dataset. That is probably because five chosed principal components explain only about 70% of variance in the data. Also, the reason might be also presence of outliers. 
+
+**Robust PCA**
+
+The last try will be implementing robust PCA using pcaMethods::pca() function and then apllying clustering algorithm. Robust PCA is an extension of classic PCA which is much more insensitive to outliers. More on the algorithm is available e.g. on the Wikipedia site (https://en.wikipedia.org/wiki/Robust_principal_component_analysis).
+
+```{r echo = TRUE, message=FALSE}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#  install.packages("BiocManager")
+#BiocManager::install("pcaMethods", version = "3.8")
+library(pcaMethods)
+resRobSvd <- pca(data[,-1], method = "svd", nPcs = 5, center = FALSE)
+summary(resRobSvd)
+```
+
+Result of robust PCA algorithm are five principal components which together explain over 97% of variance in the data. I will implement clustering straightaway using Clara_Medoids function. 
+
+```{r echo = TRUE, message=FALSE}
+start = Sys.time()
+clm_robust <- Clara_Medoids(resRobSvd@scores, 2, distance_metric = c("euclidean"), samples = 5, sample_size = 0.2, swap_phase = TRUE, verbose = T)
+end = Sys.time()
+t = end - start
+cat('time to complete :', t, attributes(t)$units, '\n')
+```
+
+```{r echo = TRUE, message=TRUE, fig.align='center', include=FALSE}
+Silhouette_Dissimilarity_Plot(clm_robust, silhouette = TRUE)
+```
+
+```{r echo=FALSE, out.width = '70%', fig.align='center'}
+knitr::include_graphics("V4.png")
+```
+
+In the first cluster there are 1149 customers and in the second one there are 641 customers. The value of silhouette for first cluster is 0.66 and for the second one it is only 0.01. The average silhouette value is 0.427. The result of clustering seems to be better than in case of classic PCA, however it seems that only one cluster is compact. It is possible that the second cluster is just a noise data and the first one consist of most simmilar observations. The difference in compactness between these two clusters is visible when comparing clusters' statistics.
+
+```{r echo = TRUE, message=FALSE}
+clm_robust$clustering_stats
+```
+
+### Conlcusions
+
+Comparing all clustering processes, one can clearly see that the best performing algorithm in case of segmentation of the customers are both CLARA algorithm with Pearson's correlation as distance metric and CLARA based on robust PCA principal component. However, considering the run-time of the algorithm, CLARA based on robust PCA is almost 4 times faster than the CLARA on the whole dataset which is a huge advantage in case of large datasets. 
+
+In order to choose the best algorithm overall, one has to specify his goal. If he wants to reach out everyone, it is difficult and thus maybe more complex clustering method should be chosen. But if one is enough with reaching only some part, algorithm based on robust PCA could work since it reaches the most similar customers and they are regardless over 50% of the population.
